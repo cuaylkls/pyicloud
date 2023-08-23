@@ -9,7 +9,7 @@ import time
 from re import search
 from requests import Response
 
-from pyicloud.exceptions import PyiCloudAPIResponseException
+from pyicloud.exceptions import PyiCloudAPIResponseException, PyiCloudException
 
 
 LOGGER = logging.getLogger(__name__)
@@ -17,12 +17,13 @@ LOGGER = logging.getLogger(__name__)
 
 class DriveService:
     """The 'Drive' iCloud service."""
-
     def __init__(self, service_root, document_root, session, params):
         self._service_root = service_root
         self._document_root = document_root
         self.session = session
         self.params = dict(params)
+        self._drive_zone = "com.apple.CloudDocs"
+        self._root_name = "root"
         self._root = None
 
     def _get_token_from_cookie(self):
@@ -42,7 +43,7 @@ class DriveService:
             data=json.dumps(
                 [
                     {
-                        "drivewsid": "FOLDER::com.apple.CloudDocs::%s" % node_id,
+                        "drivewsid": "FOLDER::%s::%s" % (self._drive_zone, node_id),
                         "partialData": False,
                     }
                 ]
@@ -56,7 +57,7 @@ class DriveService:
         file_params = dict(self.params)
         file_params.update({"document_id": file_id})
         response = self.session.get(
-            self._document_root + "/ws/com.apple.CloudDocs/download/by_id",
+            self._document_root + ("/ws/%s/download/by_id" % self._drive_zone),
             params=file_params,
         )
         self._raise_if_error(response)
@@ -77,6 +78,20 @@ class DriveService:
         self._raise_if_error(request)
         return request.json()["items"]
 
+    def set_app_library(self, app_library_name):
+        app_lib_data = self.get_app_data()
+
+        for app_lib in app_lib_data:
+            if app_lib['type'] == 'APP_LIBRARY' and 'name' in app_lib:
+                if app_lib['name'] == app_library_name:
+                    self._root_name = app_lib['docwsid']
+                    self._drive_zone = app_lib['zone']
+
+                    found = True
+                    break
+        else:
+            raise PyiCloudException(f"App library '{app_library_name}' not found")
+
     def _get_upload_contentws_url(self, file_object):
         """Get the contentWS endpoint URL to add a new file."""
         content_type = mimetypes.guess_type(file_object.name)[0]
@@ -93,7 +108,7 @@ class DriveService:
         file_params.update(self._get_token_from_cookie())
 
         request = self.session.post(
-            self._document_root + "/ws/com.apple.CloudDocs/upload/web",
+            self._document_root + ("/ws/%s/upload/web" % self._drive_zone),
             params=file_params,
             headers={"Content-Type": "text/plain"},
             data=json.dumps(
@@ -138,7 +153,7 @@ class DriveService:
             data["data"].update({"receipt": sf_info["receipt"]})
 
         request = self.session.post(
-            self._document_root + "/ws/com.apple.CloudDocs/update/documents",
+            self._document_root + ("/ws/%s/update/documents" % self._drive_zone),
             params=self.params,
             headers={"Content-Type": "text/plain"},
             data=json.dumps(data),
@@ -220,7 +235,7 @@ class DriveService:
     def root(self):
         """Returns the root node."""
         if not self._root:
-            self._root = DriveNode(self, self.get_node_data("root"))
+            self._root = DriveNode(self, self.get_node_data(self._root_name))
         return self._root
 
     def __getattr__(self, attr):
